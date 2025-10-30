@@ -1,6 +1,24 @@
-variable "aws_region" {}
-variable "instance_name" {}
-variable "instance_type" {}
-variable "ami_id" {}
-variable "admin_user" {}
-variable "admin_password" {}
+variable "aws_region" {
+  type    = string
+  default = "eu-west-3"
+}
+
+variable "instance_name" {
+  type    = string
+  default = "sandbox-debian"
+}
+
+variable "instance_type" {
+  type    = string
+  default = "t2.micro"
+}
+
+variable "admin_user" {
+  type    = string
+  default = "admin"
+}
+
+variable "admin_password" {
+  type    = string
+  default = "admin"
+}
