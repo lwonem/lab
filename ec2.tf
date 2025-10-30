@@ -1,106 +1,140 @@
-#########################
-# Variables
-#########################
+##############################
+# 🔧 Provider AWS
+##############################
+provider "aws" {
+  region = var.aws_region
+}
+
+##############################
+# 🧩 Variables
+##############################
+variable "aws_region" {
+  description = "Région AWS"
+  type        = string
+  default     = "eu-west-3"
+}
+
 variable "instance_name" {
-  type    = string
-  default = "sandbox-debian"
+  description = "Nom de l'instance EC2"
+  type        = string
+  default     = "sandbox-debian"
 }
 
 variable "instance_type" {
-  type    = string
-  default = "t2.micro"
+  description = "Type d'instance EC2"
+  type        = string
+  default     = "t2.micro"
 }
 
-# Optionnel : peux laisser vide et utiliser un data "aws_ami" pour trouver l'AMI Debian
 variable "ami_id" {
-  type    = string
-  default = ""  # si vide, on prendra un fallback (cf. data source ci-dessous)
+  description = "ID AMI Debian (facultatif)"
+  type        = string
+  default     = ""
 }
 
 variable "admin_user" {
-  type    = string
-  default = "admin"
+  description = "Nom d'utilisateur administrateur"
+  type        = string
+  default     = "admin"
 }
 
 variable "admin_password" {
-  type    = string
-  default = "admin"
+  description = "Mot de passe administrateur"
+  type        = string
+  default     = "admin"
 }
 
-#########################
-# AMI selection (fallback)
-#########################
-# NOTE: il est recommandé d'externaliser l'AMI ou d'utiliser un param SSM. Ici on essaye d'avoir un fallback si ami_id vide.
-data "aws_ami" "debian" {
-  count = var.ami_id == "" ? 1 : 0
+##############################
+# 🌐 VPC et sous-réseau (optionnel si tu as déjà ton VPC)
+##############################
+# Si tu veux te connecter à ton VPC existant, remplace par le bon subnet_id.
+# Exemple : subnet-0abcd12345
+data "aws_subnet" "default" {
+  filter {
+    name   = "default-for-az"
+    values = ["true"]
+  }
+}
 
+##############################
+# 🔒 Security Group (SSH)
+##############################
+resource "aws_security_group" "ec2_sg" {
+  name        = "${var.instance_name}-sg"
+  description = "Autorise SSH (port 22)"
+  vpc_id      = data.aws_subnet.default.vpc_id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.instance_name}-sg"
+  }
+}
+
+##############################
+# 🖥️ Instance EC2 Debian
+##############################
+# Utilise AMI Debian officielle (si ami_id non défini)
+data "aws_ami" "debian" {
   most_recent = true
+  owners      = ["136693071363"] # Debian
 
   filter {
     name   = "name"
-    values = ["debian-*bookworm*","debian-12*"]
+    values = ["debian-12-amd64-*"]
   }
-
-  owners = ["136693071363"] # ATTENTION: peut varier selon région; si le data échoue, fournis ami_id via variable
 }
 
-#########################
-# Key pair: none (nous n'utilisons pas key_name)
-# Nous injectons user/password via user_data (cloud-init)
-#########################
-
-#########################
-# EC2 instance
-#########################
-resource "aws_instance" "sandbox_vm" {
-  ami                    = var.ami_id != "" ? var.ami_id : data.aws_ami.debian[0].id
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.public_subnet.id
-  vpc_security_group_ids = [aws_security_group.sandbox_sg.id]
-
+resource "aws_instance" "debian_ec2" {
+  ami                         = var.ami_id != "" ? var.ami_id : data.aws_ami.debian.id
+  instance_type               = var.instance_type
+  subnet_id                   = data.aws_subnet.default.id
+  vpc_security_group_ids      = [aws_security_group.ec2_sg.id]
   associate_public_ip_address = true
 
-  # user_data: create user, set password, enable password auth (for Debian/Ubuntu)
+  # Script d'initialisation
   user_data = <<-EOF
-              #cloud-config
-              users:
-                - name: ${var.admin_user}
-                  gecos: "Admin User"
-                  primary_group: admin
-                  groups: sudo
-                  lock_passwd: false
-                  passwd: ${trimspace(chomp(base64encode("${var.admin_password}")))} # placeholder not used, see runcmd
-              runcmd:
-                - [ bash, -lc, "useradd -m -s /bin/bash ${var.admin_user} || true" ]
-                - [ bash, -lc, "echo '${var.admin_user}:${var.admin_password}' | chpasswd" ]
-                - [ bash, -lc, "usermod -aG sudo ${var.admin_user} || true" ]
-                - [ bash, -lc, "sed -i 's/^#\\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true" ]
-                - [ bash, -lc, "systemctl restart ssh || systemctl restart sshd || true" ]
-              EOF
+    #!/bin/bash
+    apt update -y
+    apt install -y sudo openssh-server
+    useradd -m -s /bin/bash ${var.admin_user}
+    echo "${var.admin_user}:${var.admin_password}" | chpasswd
+    usermod -aG sudo ${var.admin_user}
+    systemctl enable ssh
+    systemctl start ssh
+  EOF
 
   tags = {
     Name = var.instance_name
   }
-
-  # Wait for instance to be ready
-  provisioner "remote-exec" {
-    when    = "create"
-    inline  = ["echo instance created"]
-    # We don't use connection as we rely on password auth; not advisable to connect with remote-exec here
-  }
 }
 
-#########################
-# Outputs
-#########################
+##############################
+# 📤 Outputs Terraform
+##############################
 output "ec2_public_ip" {
-  value = aws_instance.sandbox_vm.public_ip
+  description = "Adresse IP publique de l'instance EC2"
+  value       = aws_instance.debian_ec2.public_ip
 }
 
 output "ec2_private_ip" {
-  value = aws_instance.sandbox_vm.private_ip
+  description = "Adresse IP privée de l'instance EC2"
+  value       = aws_instance.debian_ec2.private_ip
 }
 
 output "ec2_name" {
-  value = aws_instance.sandbox_vm.tags["Name"]
+  description = "Nom de l'instance EC2"
+  value       = aws_instance.debian_ec2.tags["Name"]
 }
