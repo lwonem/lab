@@ -47,33 +47,31 @@ jobs:
           TF_VAR_admin_user: admin
           TF_VAR_admin_password: admin
         run: |
-          # If user provided ami_id in workflow input, pass it as TF_VAR_ami_id to terraform
+          # Si un AMI ID est fourni, on le passe à Terraform
           if [ -n "${{ github.event.inputs.ami_id }}" ]; then
             export TF_VAR_ami_id="${{ github.event.inputs.ami_id }}"
           fi
+
+          echo "Lancement du déploiement Terraform..."
           terraform apply -auto-approve
 
-      - name: Wait for outputs & print connect info
+      - name: Afficher les informations de connexion
         run: |
-          echo "=== Terraform outputs ==="
-          terraform output -json
-          # Extract outputs (use -raw if single-string outputs exist)
-          PUBLIC_IP=$(terraform output -raw ec2_public_ip || true)
-          PRIVATE_IP=$(terraform output -raw ec2_private_ip || true)
-          HOSTNAME=$(terraform output -raw ec2_name || true)
+          echo "=== Résultats Terraform ==="
+          terraform output -json || true
+
+          PUBLIC_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || true)
+          HOSTNAME=$(terraform output -raw ec2_name 2>/dev/null || true)
 
           echo ""
           echo "=== Connexion SSH ==="
-          echo "User: admin"
-          echo "Password: admin"
+          echo "Nom d'hôte : ${HOSTNAME:-non défini}"
+          echo "Utilisateur : admin"
+          echo "Mot de passe : admin"
           if [ -n "$PUBLIC_IP" ]; then
-            echo "IP publique: $PUBLIC_IP"
-            echo "Commande SSH (copier/coller dans terminal) :"
+            echo "Adresse IP publique : $PUBLIC_IP"
+            echo "Commande SSH (copier/coller dans le terminal) :"
             echo "ssh admin@${PUBLIC_IP}"
           else
-            echo "IP publique non disponible dans les outputs Terraform."
+            echo "⚠️  Aucune IP publique détectée dans les outputs Terraform."
           fi
-
-      - name: Upload terraform state (optional)
-        if: ${{ secrets.S3_TFSTATE_BUCKET != '' && secrets.S3_TFSTATE_KEY != '' }}
-        run: echo "Gestion du state via S3 si configuré (optionnel)" 
