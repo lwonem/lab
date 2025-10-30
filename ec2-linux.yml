@@ -1,19 +1,28 @@
-name: Terraform - EC2 Linux
+name: EC2 Linux - Build (Debian with admin/admin)
 
 on:
   workflow_dispatch:
     inputs:
       instance_name:
-        description: 'Nom de l’EC2'
+        description: "Nom de l'instance"
         required: true
-        default: 'sandbox-test'
+        default: "sandbox-debian"
+      instance_type:
+        description: "Type d'instance"
+        required: true
+        default: "t2.micro"
+      ami_id:
+        description: "AMI ID (laisser vide si variable ami est gérée dans Terraform)"
+        required: false
+        default: ""
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment: production
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Terraform
@@ -31,10 +40,40 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      - name: Terraform Apply (Build)
-        run: terraform apply -auto-approve \
-          -var="instance_name=${{ github.event.inputs.instance_name }}" \
-          -var="key_name=sandbox-key"    # ou dynamique selon Terraform
+      - name: Terraform Apply (create EC2)
+        env:
+          TF_VAR_instance_name: ${{ github.event.inputs.instance_name }}
+          TF_VAR_instance_type: ${{ github.event.inputs.instance_type }}
+          TF_VAR_admin_user: admin
+          TF_VAR_admin_password: admin
+        run: |
+          # If user provided ami_id in workflow input, pass it as TF_VAR_ami_id to terraform
+          if [ -n "${{ github.event.inputs.ami_id }}" ]; then
+            export TF_VAR_ami_id="${{ github.event.inputs.ami_id }}"
+          fi
+          terraform apply -auto-approve
 
-      - name: Show EC2 info
-        run: terraform output
+      - name: Wait for outputs & print connect info
+        run: |
+          echo "=== Terraform outputs ==="
+          terraform output -json
+          # Extract outputs (use -raw if single-string outputs exist)
+          PUBLIC_IP=$(terraform output -raw ec2_public_ip || true)
+          PRIVATE_IP=$(terraform output -raw ec2_private_ip || true)
+          HOSTNAME=$(terraform output -raw ec2_name || true)
+
+          echo ""
+          echo "=== Connexion SSH ==="
+          echo "User: admin"
+          echo "Password: admin"
+          if [ -n "$PUBLIC_IP" ]; then
+            echo "IP publique: $PUBLIC_IP"
+            echo "Commande SSH (copier/coller dans terminal) :"
+            echo "ssh admin@${PUBLIC_IP}"
+          else
+            echo "IP publique non disponible dans les outputs Terraform."
+          fi
+
+      - name: Upload terraform state (optional)
+        if: ${{ secrets.S3_TFSTATE_BUCKET != '' && secrets.S3_TFSTATE_KEY != '' }}
+        run: echo "Gestion du state via S3 si configuré (optionnel)" 
